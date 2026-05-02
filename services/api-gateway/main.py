@@ -1,0 +1,172 @@
+import uuid
+import time
+import logging
+import json
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+import redis.asyncio as aioredis
+import chromadb
+
+from middleware import RateLimitMiddleware, RequestIDMiddleware
+
+# ── Structured JSON logger ──────────────────────────────────────────────────
+class JSONFormatter(logging.Formatter):
+    def format(self, record):
+        log = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "level": record.levelname,
+            "msg": record.getMessage(),
+        }
+        if hasattr(record, "request_id"):
+            log["request_id"] = record.request_id
+        if hasattr(record, "extra"):
+            log.update(record.extra)
+        return json.dumps(log)
+
+handler = logging.StreamHandler()
+handler.setFormatter(JSONFormatter())
+logger = logging.getLogger("api-gateway")
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+# ── App state ───────────────────────────────────────────────────────────────
+redis_client = None
+chroma_client = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global redis_client, chroma_client
+    import os
+    redis_client = await aioredis.from_url(
+        f"redis://{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', 6379)}"
+    )
+    # Lazy ChromaDB — don't connect at startup, connect on first use
+    chroma_client = None
+    try:
+        chroma_client = chromadb.HttpClient(
+            host=os.getenv("CHROMA_HOST", "localhost"),
+            port=int(os.getenv("CHROMA_PORT", 8000)),
+        )
+    except Exception as e:
+        logger.warning(f"ChromaDB not available at startup (will retry on use): {e}")
+
+    logger.info("Startup complete")
+    yield
+    await redis_client.close()
+
+app = FastAPI(title="LLM Inference Platform", lifespan=lifespan)
+app.add_middleware(RequestIDMiddleware)
+app.add_middleware(RateLimitMiddleware, redis_client_getter=lambda: redis_client)
+
+# ── Request/Response models ─────────────────────────────────────────────────
+class QueryRequest(BaseModel):
+    query: str
+    user_id: str = "anonymous"
+
+class QueryResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    request_id: str
+    answer: str
+    model_used: str
+    cache_hit: str          # "none" | "exact" | "semantic"
+    latency_ms: float
+    estimated_cost_usd: float
+
+# ── Health endpoint ─────────────────────────────────────────────────────────
+@app.get("/health")
+async def health():
+    status = {"api": "ok", "redis": "unknown", "chroma": "unknown"}
+    try:
+        await redis_client.ping()
+        status["redis"] = "ok"
+    except Exception as e:
+        status["redis"] = "unavailable" 
+
+    if chroma_client is None:
+        status["chroma"] = "unavailable"
+    else:
+        try:
+            chroma_client.heartbeat()
+            status["chroma"] = "ok"
+        except Exception as e:
+            status["chroma"] = "unavailable"
+
+    all_ok = status["api"] == "ok"
+    return JSONResponse(status_code=200 if all_ok else 503, content=status)
+
+# ── Main query endpoint ─────────────────────────────────────────────────────
+@app.post("/query", response_model=QueryResponse)
+async def query(req: QueryRequest, request: Request):
+    request_id = request.state.request_id
+    start = time.monotonic()
+
+    log = logger.getChild("query")
+
+    # 1. Exact cache check (Redis)
+    cache_key = f"exact:{req.query.strip().lower()}"
+    cached = await redis_client.get(cache_key)
+    if cached:
+        data = json.loads(cached)
+        latency = (time.monotonic() - start) * 1000
+        log.info("cache hit exact", extra={
+            "request_id": request_id, "extra": {"cache": "exact", "latency_ms": latency}
+        })
+        return QueryResponse(
+            request_id=request_id,
+            answer=data["answer"],
+            model_used=data["model"],
+            cache_hit="exact",
+            latency_ms=latency,
+            estimated_cost_usd=0.0,
+        )
+
+    # 2. Semantic cache check (ChromaDB) — handled by cache service
+    # Placeholder: in full build, call cache microservice here
+    # For now, skip and go to inference
+
+    # 3. Enqueue to Redis priority queue (async worker handles inference)
+    job_id = str(uuid.uuid4())
+    payload = json.dumps({"job_id": job_id, "query": req.query, "request_id": request_id})
+    await redis_client.lpush("inference_queue", payload)
+
+    log.info("job enqueued", extra={
+        "request_id": request_id,
+        "extra": {"job_id": job_id}
+    })
+
+    # 4. Poll for result (simple polling; replace with pub-sub or websocket later)
+    result_key = f"result:{job_id}"
+    for _ in range(60):          # wait up to 30s
+        await aioredis.asyncio.sleep(0.5)
+        result = await redis_client.get(result_key)
+        if result:
+            data = json.loads(result)
+            latency = (time.monotonic() - start) * 1000
+
+            # Store in exact cache (TTL 1 hour)
+            await redis_client.setex(cache_key, 3600, json.dumps({
+                "answer": data["answer"], "model": data["model"]
+            }))
+
+            log.info("inference complete", extra={
+                "request_id": request_id,
+                "extra": {
+                    "model": data["model"],
+                    "tokens": data.get("tokens", 0),
+                    "cost_usd": data.get("cost_usd", 0),
+                    "latency_ms": latency,
+                }
+            })
+            return QueryResponse(
+                request_id=request_id,
+                answer=data["answer"],
+                model_used=data["model"],
+                cache_hit="none",
+                latency_ms=latency,
+                estimated_cost_usd=data.get("cost_usd", 0),
+            )
+
+    raise HTTPException(status_code=504, detail="Inference timeout")
