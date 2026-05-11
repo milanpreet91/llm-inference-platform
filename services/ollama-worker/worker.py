@@ -71,4 +71,63 @@ async def process_job(redis: aioredis.Redis, raw: str) -> None:
     # Inference with fallback
     try:
         result = await call_ollama(model, prompt)
+    except Exception as e:
+        logger.warning(f"Primary model {model} failed: {e}. Falling back.")
+        fallback = SMALL_MODEL if model == LARGE_MODEL else LARGE_MODEL
+        try:
+            result = await call_ollama(fallback, prompt)
+            model = fallback
+        except Exception as e2:
+            logger.error(f"Fallback also failed: {e2}")
+            await redis.setex(f"result:{job_id}", 300, json.dumps({
+                "error": str(e2),
+                "answer": "Inference failed.",
+                "model": model,
+            }))
+            return
 
+    # Cost tracking
+    cost = CostTracker.calculate(
+        model=model,
+        prompt_tokens=result["prompt_tokens"],
+        completion_tokens=result["completion_tokens"],
+    )
+
+    latency = (time.monotonic() - start) * 1000
+
+    logger.info(json.dumps({
+        "event": "inference_complete",
+        "request_id": request_id,
+        "job_id": job_id,
+        "model": model,
+        "latency_ms": round(latency, 2),
+        "cost_usd": cost,
+        "tokens": result["prompt_tokens"] + result["completion_tokens"],
+    }))
+
+    # Store result for gateway to pick up (TTL 5 min)
+    await redis.setex(f"result:{job_id}", 300, json.dumps({
+        "answer": result["answer"],
+        "model": model,
+        "tokens": result["prompt_tokens"] + result["completion_tokens"],
+        "cost_usd": cost,
+    }))
+
+
+async def main():
+    redis = await aioredis.from_url(REDIS_URL)
+    logger.info("Worker started — listening on inference_queue")
+
+    while True:
+        try:
+            item = await redis.brpop(QUEUE_KEY, timeout=5)
+            if item:
+                _, raw = item
+                await process_job(redis, raw)
+        except Exception as e:
+            logger.error(f"Worker loop error: {e}")
+            await asyncio.sleep(1)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
