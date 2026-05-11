@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+import sys
 
 import httpx
 import redis.asyncio as aioredis
@@ -10,6 +11,7 @@ import redis.asyncio as aioredis
 from cost_tracker import CostTracker
 from complexity import score_complexity
 
+sys.path.append("/app/rag-pipeline")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ollama-worker")
 
@@ -57,7 +59,16 @@ async def process_job(redis: aioredis.Redis, raw: str) -> None:
         "model": model,
     }))
 
+    # Build RAG prompt
+    try:
+        from retriever import RAGRetriever
+        retriever = RAGRetriever()
+        prompt = retriever.build_prompt(query)
+    except Exception as e:
+        logger.warning(f"RAG unavailable, using raw query: {e}")
+        prompt = query
+
     # Inference with fallback
     try:
-        result = await call_ollama(model, query)
+        result = await call_ollama(model, prompt)
 

@@ -1,0 +1,16 @@
+Timing constraints in EDA define the performance requirements for a digital circuit.
+Setup time is the minimum time data must be stable before the clock edge.
+Hold time is the minimum time data must remain stable after the clock edge.
+A timing violation occurs when data does not meet setup or hold time requirements.
+
+Synthesis is the process of converting RTL (Register Transfer Level) code into a gate-level netlist.
+The netlist represents the circuit as a network of logic gates and flip-flops.
+Synthesis tools optimize the netlist for area, power, and timing.
+
+A floorplan defines the physical placement of blocks within a chip.
+Power planning ensures adequate power distribution across the chip.
+Placement and routing (PnR) determines the exact location of each cell and the wiring between them.
+
+Simulation verifies the functional correctness of a design before fabrication.
+Static timing analysis (STA) verifies timing without running simulation.
+Formal verification mathematically proves design correctness.
