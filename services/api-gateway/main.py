@@ -140,7 +140,7 @@ async def query(req: QueryRequest, request: Request):
     # 4. Poll for result (simple polling; replace with pub-sub or websocket later)
     result_key = f"result:{job_id}"
     for _ in range(60):          # wait up to 30s
-        await aioredis.asyncio.sleep(0.5)
+        await asyncio.sleep(0.5)
         result = await redis_client.get(result_key)
         if result:
             data = json.loads(result)
