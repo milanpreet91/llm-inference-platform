@@ -87,3 +87,6 @@ Cost is simulated per request using token counts returned by Ollama:
 *cost = (prompt_tokens + completion_tokens) / 1000 × rate_per_1k*
 Cache hits cost $0 -> the primary motivation for the two-tier caching architecture.
 
+#### Example
+<img width="1583" height="218" alt="image" src="https://github.com/user-attachments/assets/fb93a4e0-7a4a-4a01-aa59-e9c5cca42eda" />
+
