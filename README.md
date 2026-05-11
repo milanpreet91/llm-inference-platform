@@ -3,9 +3,10 @@ A production-style LLM inference platform serving Llama 3 via Ollama, exposing a
 RAG over EDA documentation, async request queuing, and a full observability stack.
 Built to demonstrate production ML infrastructure patterns: cost-aware routing, backpressure control, cache-first architecture, and three-pillar observability.
 
+### Architecture
 <img width="575" height="701" alt="image" src="https://github.com/user-attachments/assets/c8238f69-b0e1-42fa-b33e-20cac2459a3a" />
 
-#### Project Structure
+### Project Structure
 ```
 │   .env
 │   .env.example
@@ -16,7 +17,6 @@ Built to demonstrate production ML infrastructure patterns: cost-aware routing, 
 │
 └───services
     ├───api-gateway
-    │   │   1`
     │   │   Dockerfile
     │   │   main.py
     │   │   middleware.py
@@ -58,7 +58,7 @@ Built to demonstrate production ML infrastructure patterns: cost-aware routing, 
   - 4GB+ free RAM recommended
 
 ----------------------------------------------------------------------
-##### Steps to run:
+#### Steps to run:
 ```
 cd llm-inference-platform
 cp .env.example .env
